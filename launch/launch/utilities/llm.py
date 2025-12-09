@@ -58,7 +58,7 @@ class LLMProvider:
     def __init__(self, llm_provider: str, log_folder: str | None = "./llm_logs", **kwargs):
         """
         Initialize LLM provider with specified backend.
-        
+
         Args:
             llm_provider (str): Provider name ("AOAI", "OpenAI", "Anthropic")
             log_folder (str | None): Directory for interaction logs, None disables logging
@@ -66,6 +66,9 @@ class LLMProvider:
         """
         self.llm_provider = llm_provider
         self.log_folder = log_folder
+        self.total_input_tokens = 0
+        self.total_output_tokens = 0
+        self.model_name = kwargs.get("model_name", "unknown")
 
         llm_instance_map = {
             "AOAI": AzureOpenAIModel,
@@ -84,14 +87,22 @@ class LLMProvider:
     def invoke(self, messages: List[BaseMessage]) -> BaseMessage:
         """
         Invoke the LLM with messages, includes automatic retry and logging.
-        
+
         Args:
             messages (List[BaseMessage]): List of conversation messages
-            
+
         Returns:
             BaseMessage: LLM response message
         """
-        return self.llm_instance.invoke(messages)
+        response = self.llm_instance.invoke(messages)
+
+        # Track token usage if available
+        if hasattr(response, 'usage_metadata') and response.usage_metadata:
+            usage = response.usage_metadata
+            self.total_input_tokens += usage.get('input_tokens', 0)
+            self.total_output_tokens += usage.get('output_tokens', 0)
+
+        return response
 
 
 class OpenAIModel:
@@ -112,6 +123,7 @@ class OpenAIModel:
         # Use environment variable OPENAI_API_KEY for authentication
         self.llm = ChatOpenAI(
             # base_url="https://openrouter.ai/api/v1",
+            base_url="http://yy.dbh.baidu-int.com/v1",
             model=model_name,
             temperature=temperature,
         )

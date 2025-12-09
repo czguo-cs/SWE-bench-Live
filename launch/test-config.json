@@ -1,11 +1,10 @@
 {
     "llm_provider_name": "OpenAI",
     "model_config": {        
-        "model_name": "gpt-4o",
+        "model_name": "kimi-k2-instruct",
         "temperature": 0.0
     },
-    "workspace_root": "playground/test/",
-    "dataset": "test-dataset.jsonl",
-    "first_N_repos": 1,
+    "workspace_root": "playground/benchmark_python_v3.0/",
+    "dataset": "data/benchmark_python_v3.0.jsonl",
     "overwrite": false
 }

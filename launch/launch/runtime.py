@@ -401,12 +401,17 @@ def start_session(
         detach=True,
         environment={
             "TERM": "xterm-mono",
+            "https_proxy": "http://iJbVyX:mJ8eR9tU6%5Bs@10.251.112.51:8799",
+            "http_proxy": "http://iJbVyX:mJ8eR9tU6%5Bs@10.251.112.51:8799",
+            "no_proxy": "localhost,127.0.0.1,::1,10.0.0.0/8,192.168.0.0/16,172.16.0.0/12,*.lan,.baidu.com,.baidu-int.com,baidu.com,baidu-int.com",
+            "NO_PROXY": "localhost,127.0.0.1,::1,10.0.0.0/8,192.168.0.0/16,172.16.0.0/12,*.lan,.baidu.com,.baidu-int.com,baidu.com,baidu-int.com",
         },
         working_dir="/testbed",
         extra_hosts={"host.docker.internal": "host-gateway"},
         # resources
         mem_limit=MEM_LIMIT,
         cpu_quota=int(CPU_CORES * 100000),
+
         # volumes={str(workspace.absolute()): {"bind": "/workspace", "mode": "rw"}},
     )
 
@@ -436,6 +441,10 @@ if __name__ == "__main__":
         detach=True,
         environment={
             "TERM": "xterm-mono",
+            "https_proxy": "http://iJbVyX:mJ8eR9tU6%5Bs@10.251.112.51:8799",
+            "http_proxy": "http://iJbVyX:mJ8eR9tU6%5Bs@10.251.112.51:8799",
+            "no_proxy": "localhost,127.0.0.1,::1,10.0.0.0/8,192.168.0.0/16,172.16.0.0/12,*.lan,.baidu.com,.baidu-int.com,baidu.com,baidu-int.com",
+            "NO_PROXY": "localhost,127.0.0.1,::1,10.0.0.0/8,192.168.0.0/16,172.16.0.0/12,*.lan,.baidu.com,.baidu-int.com,baidu.com,baidu-int.com",
         },
     )
     docker_tty = SetupRuntime(container)

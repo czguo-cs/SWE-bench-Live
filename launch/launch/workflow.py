@@ -20,10 +20,10 @@ from launch.utilities.language_handlers import get_language_handler
 def save_result(state: AgentState) -> dict:
     """
     Save the launch result to a JSON file and commit successful setup to Docker image.
-    
+
     Args:
         state (AgentState): Current agent state containing results and session info
-        
+
     Returns:
         dict: Updated state with session set to None
     """
@@ -33,10 +33,19 @@ def save_result(state: AgentState) -> dict:
     start_time = state["start_time"]
     duration = time.time() - start_time
 
-    # transform to minutes
-    duration = int(duration / 60)
+    # Keep duration in seconds (float)
+    elapsed_seconds = duration
 
-    logger.info(f"Duration: {duration} minutes")
+    logger.info(f"Duration: {elapsed_seconds:.2f} seconds ({elapsed_seconds / 60:.2f} minutes)")
+
+    # Get token statistics from LLM provider
+    llm = state["llm"]
+    total_input_tokens = llm.total_input_tokens
+    total_output_tokens = llm.total_output_tokens
+    total_tokens = total_input_tokens + total_output_tokens
+    model_name = llm.model_name
+
+    logger.info(f"Token usage - Input: {total_input_tokens}, Output: {total_output_tokens}, Total: {total_tokens}")
 
     if not os.path.exists(os.path.dirname(path)):
         os.makedirs(os.path.dirname(path))
@@ -47,6 +56,7 @@ def save_result(state: AgentState) -> dict:
     if not exception and not state.get("success", False):
         exception = "Launch failed"
 
+    # Save result.json
     with open(path, "w") as f:
         f.write(
             json.dumps(
@@ -55,7 +65,7 @@ def save_result(state: AgentState) -> dict:
                     "base_image": state["base_image"],
                     "setup_commands": state["setup_commands"],
                     "test_commands": state["test_commands"],
-                    "duration": duration,
+                    "duration": int(duration / 60),  # Keep backward compatibility in minutes
                     "completed": state.get("success", False),
                     "exception": exception,
                 },
@@ -63,6 +73,24 @@ def save_result(state: AgentState) -> dict:
             )
         )
     logger.info("Result saved to: " + str(path))
+
+    # Save cost.json with token statistics
+    cost_path = os.path.join(os.path.dirname(path), "cost.json")
+    with open(cost_path, "w") as f:
+        f.write(
+            json.dumps(
+                {
+                    "elapsed_seconds": elapsed_seconds,
+                    "total_input_tokens": total_input_tokens,
+                    "total_output_tokens": total_output_tokens,
+                    "total_tokens": total_tokens,
+                    "model": model_name,
+                },
+                indent=2,
+            )
+        )
+    logger.info("Cost statistics saved to: " + str(cost_path))
+
     if state["exception"]:
         logger.error(f"!!! Exception: {state['exception']}")
 
@@ -72,7 +100,7 @@ def save_result(state: AgentState) -> dict:
     language = state["language"]
     language_handler = get_language_handler(language)
     server = state["pypiserver"]  # Keep name for backward compatibility
-    
+
     try:
         language_handler.cleanup_environment(session, server)
     except Exception as e:
@@ -82,16 +110,16 @@ def save_result(state: AgentState) -> dict:
         logger.info("Setup completed successfully, now commit into swebench image.")
 
         ARCH = "x86_64"
-        NAMESPACE = "starryzhang"
+        NAMESPACE = "guochuanzhe"
 
         key = f"sweb.eval.{ARCH}.{instance_id.lower()}"
-        key = f"{NAMESPACE}/{key}".replace("__", "_1776_")
+        key = f"{NAMESPACE}/{key}"
 
-        # try:
-        #     session.commit(image_name=key, push=False)
-        #     logger.info(f"Image {key} committed successfully.")
-        # except Exception as e:
-        #     logger.error(f"Failed to commit image: {e}")
+        try:
+            session.commit(image_name=key, push=False)
+            logger.info(f"Image {key} committed successfully.")
+        except Exception as e:
+            logger.error(f"Failed to commit image: {e}")
 
     try:
         session.cleanup()

@@ -202,8 +202,8 @@ def setup(max_steps: int, state: AgentState) -> dict:
     commands = []
     step = 0
     while step < max_steps:
-        if time.time() - state["start_time"] > 30 * 60:
-            raise TimeoutError("Reached global timeout of 30 minutes")
+        if time.time() - state["start_time"] > 90 * 60:
+            raise TimeoutError("Reached global timeout of 90 minutes")
         step += 1
         # uses a window to avoid exceed context
         commands_history = HumanMessage(

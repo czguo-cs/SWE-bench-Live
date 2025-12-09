@@ -64,6 +64,8 @@ class AgentState(State):
     start_time: float | None
     trials: int
     debug: bool
+    total_input_tokens: int
+    total_output_tokens: int
 
     @classmethod
     def create(
@@ -123,6 +125,8 @@ class AgentState(State):
             trials=0,
             exception=None,
             debug=debug,
+            total_input_tokens=0,
+            total_output_tokens=0,
         )
 
 
