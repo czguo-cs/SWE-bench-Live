@@ -6,5 +6,6 @@
     },
     "workspace_root": "playground/benchmark_python_v3.0/",
     "dataset": "data/benchmark_python_v3.0.jsonl",
-    "overwrite": false
+    "overwrite": false,
+    "max_workers":10
 }

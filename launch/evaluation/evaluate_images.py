@@ -8,9 +8,13 @@ Runs two-stage tests:
 
 import argparse
 import docker
+import io
 import json
 import os
 import re
+import signal
+import tarfile
+import threading
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime
@@ -68,25 +72,83 @@ def extract_test_files_from_patch(test_patch: str) -> List[str]:
 
 def write_patch_to_container(container, patch_content: str, dest_path: str):
     """
-    Write patch content to container using heredoc.
+    Write patch content to container using Docker put_archive API.
+
+    This method avoids "argument list too long" errors that occur when
+    using heredoc with very large patches.
 
     Args:
         container: Docker container
         patch_content: Patch content
-        dest_path: Destination path in container
+        dest_path: Destination path in container (e.g., /tmp/test.patch)
     """
-    # Use heredoc to write patch (handles special characters well)
-    heredoc_cmd = f"""cat > {dest_path} << 'EOF_PATCH_DELIMITER'
-{patch_content}
-EOF_PATCH_DELIMITER"""
+    # Create tar archive in memory
+    tar_stream = io.BytesIO()
+    tar = tarfile.TarFile(fileobj=tar_stream, mode='w')
 
-    result = container.exec_run(
-        ["bash", "-c", heredoc_cmd],
-        workdir="/testbed"
-    )
+    # Add patch content to tar
+    patch_bytes = patch_content.encode('utf-8')
+    tarinfo = tarfile.TarInfo(name=os.path.basename(dest_path))
+    tarinfo.size = len(patch_bytes)
+    tarinfo.mtime = time.time()
+    tar.addfile(tarinfo, io.BytesIO(patch_bytes))
+    tar.close()
 
-    if result.exit_code != 0:
-        raise RuntimeError(f"Failed to write patch to {dest_path}: {result.output.decode()}")
+    # Upload tar to container
+    tar_stream.seek(0)
+    dest_dir = os.path.dirname(dest_path)
+    if not dest_dir:
+        dest_dir = '/'
+
+    success = container.put_archive(dest_dir, tar_stream)
+    if not success:
+        raise RuntimeError(f"Failed to write patch to {dest_path}")
+
+
+def install_pytest_in_container(container, timeout_seconds: int = 300) -> tuple:
+    """
+    Install pytest in container if not already installed.
+
+    Args:
+        container: Docker container
+        timeout_seconds: Timeout for installation
+
+    Returns:
+        Tuple of (success: bool, message: str)
+    """
+    # Check if pytest is already installed
+    check_cmd = ["bash", "-c", "python -m pytest --version 2>/dev/null || python3 -m pytest --version 2>/dev/null"]
+    check_result = container.exec_run(check_cmd, workdir="/testbed")
+
+    if check_result.exit_code == 0:
+        return (True, f"pytest already installed: {check_result.output.decode().strip()}")
+
+    # Try to install pytest
+    install_cmd = ["bash", "-c", "pip install pytest 2>&1 || pip3 install pytest 2>&1"]
+
+    try:
+        install_result = exec_run_with_timeout(
+            container,
+            install_cmd,
+            timeout_seconds=timeout_seconds,
+            workdir="/testbed"
+        )
+
+        if install_result.exit_code == 0:
+            # Verify installation
+            verify_result = container.exec_run(check_cmd, workdir="/testbed")
+            if verify_result.exit_code == 0:
+                return (True, f"pytest installed successfully: {verify_result.output.decode().strip()}")
+            else:
+                return (False, "pytest installation verification failed")
+        else:
+            output = install_result.output.decode() if install_result.output else "No output"
+            return (False, f"pytest installation failed: {output}")
+
+    except TimeoutError:
+        return (False, f"pytest installation timed out after {timeout_seconds}s")
+    except Exception as e:
+        return (False, f"pytest installation error: {str(e)}")
 
 
 def check_test_results(exit_code: int) -> bool:
@@ -102,6 +164,53 @@ def check_test_results(exit_code: int) -> bool:
     return exit_code == 0
 
 
+def exec_run_with_timeout(container, command, timeout_seconds, **kwargs):
+    """
+    Execute command in container with timeout.
+
+    Args:
+        container: Docker container
+        command: Command to execute
+        timeout_seconds: Timeout in seconds
+        **kwargs: Additional arguments for exec_run
+
+    Returns:
+        Tuple of (exit_code, output, timed_out)
+
+    Raises:
+        TimeoutError: If command execution exceeds timeout
+    """
+    result_container = {'exit_code': None, 'output': None, 'exception': None}
+
+    def run_command():
+        try:
+            result = container.exec_run(command, **kwargs)
+            result_container['exit_code'] = result.exit_code
+            result_container['output'] = result.output
+        except Exception as e:
+            result_container['exception'] = e
+
+    thread = threading.Thread(target=run_command)
+    thread.daemon = True
+    thread.start()
+    thread.join(timeout=timeout_seconds)
+
+    if thread.is_alive():
+        # Timeout occurred
+        raise TimeoutError(f"Command execution exceeded {timeout_seconds} seconds")
+
+    if result_container['exception']:
+        raise result_container['exception']
+
+    # Create a mock result object similar to docker exec_run result
+    class ExecResult:
+        def __init__(self, exit_code, output):
+            self.exit_code = exit_code
+            self.output = output
+
+    return ExecResult(result_container['exit_code'], result_container['output'])
+
+
 def evaluate_single_instance(
     instance_id: str,
     output_dir: str,
@@ -109,6 +218,7 @@ def evaluate_single_instance(
     arch: str = "x86_64",
     tag: str = "latest",
     timeout: int = 600,
+    install_pytest: bool = False,
 ) -> Dict:
     """
     Evaluate a single instance using its Docker image.
@@ -120,6 +230,7 @@ def evaluate_single_instance(
         arch: Architecture
         tag: Image tag
         timeout: Timeout in seconds
+        install_pytest: Install pytest before running tests
 
     Returns:
         Result dictionary
@@ -214,6 +325,17 @@ def evaluate_single_instance(
         # Wait for container to be ready
         time.sleep(1)
 
+        # Install pytest if requested
+        if install_pytest:
+            pytest_success, pytest_message = install_pytest_in_container(container, timeout_seconds=300)
+            if not pytest_success:
+                result['status'] = 'pytest_install_failed'
+                result['message'] = f'Failed to install pytest: {pytest_message}'
+                with open(test_only_log_path, 'w') as f:
+                    f.write("=== Failed to install pytest ===\n")
+                    f.write(pytest_message)
+                return result
+
         # Write and apply test_patch
         write_patch_to_container(container, test_patch, "/tmp/test.patch")
         apply_result = container.exec_run(
@@ -230,13 +352,33 @@ def evaluate_single_instance(
             return result
 
         # Run tests
-        test_result = container.exec_run(
-            ["bash", "-c", test_cmd],
-            workdir="/testbed"
-        )
+        try:
+            test_result = exec_run_with_timeout(
+                container,
+                ["bash", "-c", test_cmd],
+                timeout_seconds=timeout,
+                workdir="/testbed"
+            )
+            test_only_output = test_result.output.decode()
+            test_only_exit_code = test_result.exit_code
+        except TimeoutError as e:
+            result['status'] = 'test_only_timeout'
+            result['message'] = f'Stage 1 test execution timed out after {timeout}s'
+            test_only_output = f"Test execution timed out after {timeout} seconds"
+            test_only_exit_code = -1
 
-        test_only_output = test_result.output.decode()
-        test_only_exit_code = test_result.exit_code
+            # Save timeout log
+            with open(test_only_log_path, 'w') as f:
+                f.write("=== Stage 1: Test with only test_patch ===\n\n")
+                f.write(f"=== Image ===\n{image_name}\n\n")
+                f.write("=== Test Files ===\n")
+                for tf in test_files:
+                    f.write(f"  - {tf}\n")
+                f.write("\n=== Test Command ===\n")
+                f.write(f"{test_cmd}\n\n")
+                f.write("=== TIMEOUT ===\n")
+                f.write(f"Test execution exceeded timeout of {timeout} seconds\n")
+            return result
 
         result['test_only_time'] = time.time() - test_only_start
         result['test_only_passed'] = check_test_results(test_only_exit_code)
@@ -280,6 +422,17 @@ def evaluate_single_instance(
         # Wait for container to be ready
         time.sleep(1)
 
+        # Install pytest if requested
+        if install_pytest:
+            pytest_success, pytest_message = install_pytest_in_container(container, timeout_seconds=300)
+            if not pytest_success:
+                result['status'] = 'pytest_install_failed_stage2'
+                result['message'] = f'Failed to install pytest in stage 2: {pytest_message}'
+                with open(both_patches_log_path, 'w') as f:
+                    f.write("=== Failed to install pytest (stage 2) ===\n")
+                    f.write(pytest_message)
+                return result
+
         # Write and apply fix_patch
         write_patch_to_container(container, fix_patch, "/tmp/fix.patch")
         apply_fix_result = container.exec_run(
@@ -311,13 +464,33 @@ def evaluate_single_instance(
             return result
 
         # Run tests
-        test_result = container.exec_run(
-            ["bash", "-c", test_cmd],
-            workdir="/testbed"
-        )
+        try:
+            test_result = exec_run_with_timeout(
+                container,
+                ["bash", "-c", test_cmd],
+                timeout_seconds=timeout,
+                workdir="/testbed"
+            )
+            both_patches_output = test_result.output.decode()
+            both_patches_exit_code = test_result.exit_code
+        except TimeoutError as e:
+            result['status'] = 'both_patches_timeout'
+            result['message'] = f'Stage 2 test execution timed out after {timeout}s'
+            both_patches_output = f"Test execution timed out after {timeout} seconds"
+            both_patches_exit_code = -1
 
-        both_patches_output = test_result.output.decode()
-        both_patches_exit_code = test_result.exit_code
+            # Save timeout log
+            with open(both_patches_log_path, 'w') as f:
+                f.write("=== Stage 2: Test with both fix_patch and test_patch ===\n\n")
+                f.write(f"=== Image ===\n{image_name}\n\n")
+                f.write("=== Test Files ===\n")
+                for tf in test_files:
+                    f.write(f"  - {tf}\n")
+                f.write("\n=== Test Command ===\n")
+                f.write(f"{test_cmd}\n\n")
+                f.write("=== TIMEOUT ===\n")
+                f.write(f"Test execution exceeded timeout of {timeout} seconds\n")
+            return result
 
         result['both_patches_time'] = time.time() - both_patches_start
         result['both_patches_passed'] = check_test_results(both_patches_exit_code)
@@ -449,6 +622,11 @@ def main():
         default=None,
         help='Maximum number of instances to evaluate'
     )
+    parser.add_argument(
+        '--install-pytest',
+        action='store_true',
+        help='Install pytest in containers before running tests (default: False)'
+    )
 
     args = parser.parse_args()
 
@@ -468,6 +646,7 @@ def main():
     print(f"Image tag:        {args.tag}")
     print(f"Parallel workers: {args.parallel}")
     print(f"Timeout:          {args.timeout}s")
+    print(f"Install pytest:   {args.install_pytest}")
     print()
 
     # Find instances to evaluate
@@ -508,7 +687,7 @@ def main():
 
     # Prepare arguments for parallel execution
     eval_args = [
-        (inst_id, output_dir, args.namespace, args.arch, args.tag, args.timeout)
+        (inst_id, output_dir, args.namespace, args.arch, args.tag, args.timeout, args.install_pytest)
         for inst_id in instances_to_eval
     ]
 
@@ -569,10 +748,10 @@ def main():
         print("Starting sequential evaluation...")
         print()
 
-        for idx, (inst_id, output_dir, namespace, arch, tag, timeout) in enumerate(eval_args, 1):
+        for idx, (inst_id, output_dir, namespace, arch, tag, timeout, install_pytest) in enumerate(eval_args, 1):
             print(f"[{idx}/{len(instances_to_eval)}] Evaluating: {inst_id}")
 
-            result = evaluate_single_instance(inst_id, output_dir, namespace, arch, tag, timeout)
+            result = evaluate_single_instance(inst_id, output_dir, namespace, arch, tag, timeout, install_pytest)
             results['details'].append(result)
 
             # Update counts

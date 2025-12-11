@@ -10,11 +10,12 @@ echo ""
 
 # Configuration
 OUTPUT_DIR="playground/benchmark_python_v3.0"
-NAMESPACE="starryzhang"
+NAMESPACE="guochuanzhe"
 ARCH="x86_64"
 TAG="latest"
-PARALLEL=4
+PARALLEL=20
 TIMEOUT=600
+INSTALL_PYTEST=true  # Set to true to install pytest in containers before tests
 
 # Check if output directory exists
 if [ ! -d "$OUTPUT_DIR" ]; then
@@ -23,10 +24,10 @@ if [ ! -d "$OUTPUT_DIR" ]; then
 fi
 
 # Count available images
-echo "Checking Docker images..."
-IMAGE_COUNT=$(docker images | grep "${NAMESPACE}/sweb.eval" | wc -l)
-echo "Found $IMAGE_COUNT images in namespace: $NAMESPACE"
-echo ""
+# echo "Checking Docker images..."
+# IMAGE_COUNT=$(docker images | grep "${NAMESPACE}/sweb.eval" | wc -l)
+# echo "Found $IMAGE_COUNT images in namespace: $NAMESPACE"
+# echo ""
 
 if [ "$IMAGE_COUNT" -eq 0 ]; then
     echo "Warning: No images found in namespace: $NAMESPACE"
@@ -38,21 +39,29 @@ fi
 
 # Run evaluation
 echo "Running evaluation..."
-echo "  Output dir:  $OUTPUT_DIR"
-echo "  Namespace:   $NAMESPACE"
+echo "  Output dir:   $OUTPUT_DIR"
+echo "  Namespace:    $NAMESPACE"
 echo "  Architecture: $ARCH"
-echo "  Tag:         $TAG"
-echo "  Parallel:    $PARALLEL workers"
-echo "  Timeout:     ${TIMEOUT}s"
+echo "  Tag:          $TAG"
+echo "  Parallel:     $PARALLEL workers"
+echo "  Timeout:      ${TIMEOUT}s"
+echo "  Install pytest: $INSTALL_PYTEST"
 echo ""
 
-python3 evaluation/evaluate_images.py \
-  --output_dir "$OUTPUT_DIR" \
-  --namespace "$NAMESPACE" \
-  --arch "$ARCH" \
-  --tag "$TAG" \
-  --parallel "$PARALLEL" \
-  --timeout "$TIMEOUT"
+# Build command with optional --install-pytest flag
+CMD="python3 evaluation/evaluate_images.py \
+  --output_dir \"$OUTPUT_DIR\" \
+  --namespace \"$NAMESPACE\" \
+  --arch \"$ARCH\" \
+  --tag \"$TAG\" \
+  --parallel \"$PARALLEL\" \
+  --timeout \"$TIMEOUT\""
+
+if [ "$INSTALL_PYTEST" = true ]; then
+    CMD="$CMD --install-pytest"
+fi
+
+eval $CMD
 
 # Check if evaluation succeeded
 if [ $? -ne 0 ]; then

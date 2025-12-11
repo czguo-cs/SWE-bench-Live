@@ -67,6 +67,11 @@ python3 evaluation/evaluate_images.py \
 python3 evaluation/evaluate_images.py \
   --output_dir playground/benchmark_python_v3.0 \
   --max_instances 10
+
+# Install pytest before running tests (useful if images don't have pytest)
+python3 evaluation/evaluate_images.py \
+  --output_dir playground/benchmark_python_v3.0 \
+  --install-pytest
 ```
 
 **Parameters:**
@@ -78,6 +83,7 @@ python3 evaluation/evaluate_images.py \
 - `--parallel`: Number of parallel workers (default: 1)
 - `--timeout`: Timeout in seconds per instance (default: 600)
 - `--max_instances`: Maximum number of instances to evaluate (optional)
+- `--install-pytest`: Install pytest in containers before running tests (default: False)
 
 **Output:**
 - Creates `evaluation_logs/` in each instance directory
@@ -109,6 +115,49 @@ python3 evaluation/analyze_results.py \
   --performance
 ```
 
+### 3. `analyze_cost.py` (Cost and Token Analysis)
+
+Analyze cost.json files to compute statistics on token usage and execution time.
+
+**Usage:**
+
+```bash
+# Basic analysis
+python3 evaluation/analyze_cost.py \
+  --base_dir playground/benchmark_python_v3.0
+
+# Detailed analysis with top instances
+python3 evaluation/analyze_cost.py \
+  --base_dir playground/benchmark_python_v3.0 \
+  --verbose
+
+# Export to JSON
+python3 evaluation/analyze_cost.py \
+  --base_dir playground/benchmark_python_v3.0 \
+  --export_json cost_analysis.json
+
+# Export to CSV (also supported)
+python3 evaluation/analyze_cost.py \
+  --base_dir playground/benchmark_python_v3.0 \
+  --export_csv cost_analysis.csv
+```
+
+**Parameters:**
+- `--base_dir`: Base directory to search for cost.json files (default: playground/benchmark_python_v3.0)
+- `--verbose`: Print detailed information including top instances by time, tokens, etc.
+- `--export_json`: Export results to JSON file
+- `--export_csv`: Export results to CSV file
+
+**Output Statistics:**
+- **Overall Statistics**: Total, mean, median, min, max for:
+  - Elapsed time (seconds)
+  - Input tokens
+  - Output tokens
+  - Total tokens
+  - Tokens per second
+- **Per-Model Statistics**: Average metrics grouped by model
+- **Top Instances**: Top 10 instances by time, total tokens, input tokens, and output tokens (with --verbose or in JSON/CSV export)
+
 ## Quick Start
 
 ```bash
@@ -120,16 +169,26 @@ python3 evaluation/evaluate_images.py \
   --namespace starryzhang \
   --parallel 4
 
-# 2. Analyze results
+# 2. Analyze evaluation results
 python3 evaluation/analyze_results.py \
   --result_file playground/evaluation_results_benchmark_python_v3.0.json \
   --list_failed \
   --performance
 
-# 3. Export to CSV
+# 3. Analyze token usage and costs
+python3 evaluation/analyze_cost.py \
+  --base_dir playground/benchmark_python_v3.0 \
+  --verbose
+
+# 4. Export results to JSON
+python3 evaluation/analyze_cost.py \
+  --base_dir playground/benchmark_python_v3.0 \
+  --export_json cost_analysis.json
+
+# Or export to CSV
 python3 evaluation/analyze_results.py \
   --result_file playground/evaluation_results_benchmark_python_v3.0.json \
-  --export_csv results.csv
+  --export_csv evaluation_results.csv
 ```
 
 ## Evaluation Flow
@@ -233,6 +292,10 @@ For each instance, logs are saved in `{instance_dir}/evaluation_logs/`:
 - `f2p_passed`: F2P verification passed ✓✓
 - `env_passed`: Environment passed ✓
 - `failed`: Tests failed ✗
+- `test_only_timeout`: Stage 1 test execution timed out ⏱
+- `both_patches_timeout`: Stage 2 test execution timed out ⏱
+- `pytest_install_failed`: Failed to install pytest in Stage 1
+- `pytest_install_failed_stage2`: Failed to install pytest in Stage 2
 - `no_image`: Docker image not found
 - `no_instance_dir`: Instance directory missing
 - `no_instance_json`: instance.json not found
@@ -260,6 +323,10 @@ For each instance, logs are saved in `{instance_dir}/evaluation_logs/`:
 3. **Simple Pass/Fail**: Only checks exit code (0=pass, non-zero=fail)
 4. **Stateless Containers**: Each stage uses a fresh container
 5. **Automatic Cleanup**: Containers are removed after each stage
+6. **Timeout Protection**: Each test stage has a configurable timeout (default: 600s)
+   - If a test exceeds the timeout, it will be terminated
+   - Timeout errors are logged with status `test_only_timeout` or `both_patches_timeout`
+   - Adjust timeout with `--timeout` parameter based on your test complexity
 
 ## Troubleshooting
 
@@ -297,6 +364,8 @@ Common issues:
 - File paths don't match repository structure
 - Git working directory is dirty
 
+**Note:** The evaluation uses Docker's `put_archive` API to write patches, which handles large patch files (>500KB) without "argument list too long" errors.
+
 ### Performance
 
 Use parallel execution for better performance:
@@ -312,6 +381,49 @@ python3 evaluation/evaluate_images.py \
 - Each worker runs 2 containers per instance (stages 1 & 2)
 - Containers are short-lived (only during testing)
 - Memory: ~2GB per instance image
+
+### Test Timeout Issues
+
+If tests are timing out, you can increase the timeout:
+
+```bash
+# Increase timeout to 20 minutes (1200 seconds)
+python3 evaluation/evaluate_images.py \
+  --output_dir playground/benchmark_python_v3.0 \
+  --timeout 1200
+```
+
+Common causes of timeouts:
+- Very large test suites
+- Tests with extensive I/O operations
+- Tests that spawn subprocesses or background tasks
+- Infinite loops or deadlocks in test code
+
+Check timeout logs:
+```bash
+# View timeout details
+cat playground/benchmark_python_v3.0/{instance_id}/evaluation_logs/test_only.log
+cat playground/benchmark_python_v3.0/{instance_id}/evaluation_logs/both_patches.log
+```
+
+### Pytest Not Available
+
+If containers don't have pytest installed, use the `--install-pytest` flag:
+
+```bash
+# Install pytest automatically before running tests
+python3 evaluation/evaluate_images.py \
+  --output_dir playground/benchmark_python_v3.0 \
+  --install-pytest
+```
+
+This will:
+- Check if pytest is already installed in each container
+- Install pytest if not found (using pip or pip3)
+- Verify the installation succeeded
+- Timeout after 300 seconds if installation takes too long
+
+**Note:** Installing pytest adds overhead to evaluation time (typically 10-30 seconds per container). Only use this flag if your Docker images don't have pytest pre-installed.
 
 ## Example Workflows
 
@@ -399,8 +511,8 @@ python3 launch.py --config config.json
 # 2. Evaluate the created images
 python3 evaluation/evaluate_images.py \
   --output_dir playground/benchmark_python_v3.0 \
-  --namespace starryzhang \
-  --parallel 4
+  --namespace guochuanzhe \
+  --parallel 15
 
 # 3. Analyze results
 python3 evaluation/analyze_results.py \
